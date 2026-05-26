@@ -1,0 +1,5 @@
+aws_region   = "eu-west-2"
+cluster_name = "platform-prod"
+environment  = "prod"
+github_org   = "my-org"
+github_repo  = "my-platform-repo"

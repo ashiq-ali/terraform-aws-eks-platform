@@ -1,0 +1,85 @@
+name: Terraform CI
+
+on:
+  pull_request:
+    paths:
+      - '**.tf'
+      - '**.tfvars.example'
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.6"
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init and validate all modules
+        run: |
+          for dir in modules/*/; do
+            echo "── Validating $dir"
+            terraform -chdir="$dir" init -backend=false -no-color
+            terraform -chdir="$dir" validate -no-color
+          done
+
+  plan:
+    name: Plan (complete example)
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'pull_request'
+    environment: staging
+
+    env:
+      GITHUB_ORG:  ${{ github.repository_owner }}
+      GITHUB_REPO: ${{ github.event.repository.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.6"
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform init
+        working-directory: examples/complete
+        run: terraform init -no-color
+
+      - name: Terraform plan
+        id: plan
+        working-directory: examples/complete
+        run: |
+          terraform plan -no-color -input=false \
+            -var="github_org=$GITHUB_ORG" \
+            -var="github_repo=$GITHUB_REPO" \
+            2>&1 | tee plan.txt
+
+      - name: Post plan to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('examples/complete/plan.txt', 'utf8');
+            const truncated = plan.length > 60000 ? plan.slice(0, 60000) + '\n... (truncated)' : plan;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan\n\`\`\`hcl\n${truncated}\n\`\`\``
+            });
